@@ -1,0 +1,20 @@
+{
+  "allFiles": [
+    {
+      "file": "/storage/emulated/0/AndroidIDEProjects/bvds/app/src/main/assets/app.html",
+      "selection": {
+        "end": {
+          "column": 1,
+          "index": 718,
+          "line": 24
+        },
+        "start": {
+          "column": 1,
+          "index": 718,
+          "line": 24
+        }
+      }
+    }
+  ],
+  "selectedFile": "/storage/emulated/0/AndroidIDEProjects/bvds/app/src/main/assets/app.html"
+}
