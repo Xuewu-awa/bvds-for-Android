@@ -32,8 +32,8 @@ public class BridgeInterface {
     private final SharedPreferences prefs;
     private final MediaMerger mediaMerger;
 
-    private String cookieStore = "";
-    private String lastHtml = "";  // 供日志复制使用
+    private volatile String cookieStore = "";
+    private volatile String lastHtml = "";  // 供日志复制使用
 
     // bvds.py QUALITY_MAP
     private static final int[][] QUALITY_MAP = {
@@ -156,7 +156,7 @@ public class BridgeInterface {
             if (part.isEmpty()) continue;
             if (part.startsWith("http://") || part.startsWith("https://")) {
                 arr.put(part);
-            } else if (part.contains("bilibili.com")) {
+            } else if (part.contains("bilibili.com") || part.contains("b23.tv")) {
                 arr.put("https://" + part);
             }
         }
@@ -354,12 +354,14 @@ public class BridgeInterface {
             int code = conn.getResponseCode();
             jlog(taskId, "PGC API 响应 code=" + code);
             if (code != 200) {
+                conn.disconnect();
                 info.put("error", "PGC API 请求失败 HTTP " + code);
                 callJS("onVideoInfoResult", "\"" + taskId + "\", " + info.toString());
                 return;
             }
             String body = readStream(conn.getInputStream());
             mergeAllCookies(conn);
+            conn.disconnect();
             jlog(taskId, "PGC 响应长度=" + body.length());
 
             JSONObject resp = new JSONObject(body);
@@ -381,12 +383,15 @@ public class BridgeInterface {
                     jlog(taskId, "PGC video=" + (videos != null ? videos.length() : 0) +
                               " audio=" + (audios != null ? audios.length() : 0));
                     if (videos != null && videos.length() > 0 && audios != null && audios.length() > 0) {
+                        // 按 qualityCode 匹配视频清晰度（与 extractPlayInfo 一致）
                         JSONObject bestV = videos.getJSONObject(0);
-                        long bestBwV = optLong(bestV, "bandwidth", 0);
-                        for (int i = 1; i < videos.length(); i++) {
+                        int bestDiff = Integer.MAX_VALUE;
+                        for (int i = 0; i < videos.length(); i++) {
                             JSONObject v = videos.getJSONObject(i);
-                            long bw = optLong(v, "bandwidth", 0);
-                            if (bw > bestBwV) { bestBwV = bw; bestV = v; }
+                            int vid = v.optInt("id", 0);
+                            if (vid == qualityCode) { bestV = v; break; }
+                            int diff = Math.abs(vid - qualityCode);
+                            if (diff < bestDiff) { bestDiff = diff; bestV = v; }
                         }
                         JSONObject bestA = audios.getJSONObject(0);
                         long bestBwA = optLong(bestA, "bandwidth", 0);
@@ -397,7 +402,7 @@ public class BridgeInterface {
                         }
                         info.put("videoUrl", optString(bestV, "baseUrl", "base_url"));
                         info.put("audioUrl", optString(bestA, "baseUrl", "base_url"));
-                        jlog(taskId, "PGC 解析成功");
+                        jlog(taskId, "PGC 解析成功 videoId=" + bestV.optInt("id"));
                     } else {
                         jlog(taskId, "PGC dash 为空", true);
                         info.put("error", "PGC dash 数据为空");
@@ -448,36 +453,54 @@ public class BridgeInterface {
                         callJS("onTaskFailed", "\"" + taskId + "\", \"音频下载失败\"");
                     }
                 } else {
-                    // 完整视频：先下载视频再下载音频再合并
-                    String videoPath = parent.getAbsolutePath() + "/video_" + unique + ".m4v";
-                    String audioPath = parent.getAbsolutePath() + "/audio_" + unique + ".m4a";
+                    // 完整视频：下载到私有缓存 → 合并 → 复制到目标目录 → 清理缓存
+                    File cacheDir = context.getCacheDir();
+                    String videoPath = new File(cacheDir, "video_" + unique + ".m4v").getAbsolutePath();
+                    String audioPath = new File(cacheDir, "audio_" + unique + ".m4a").getAbsolutePath();
+                    String mergedPath = new File(cacheDir, "merged_" + unique + ".mp4").getAbsolutePath();
 
-                    // 下载视频 (0-50%)
+                    // 下载视频 → 缓存 (0-50%)
                     boolean vOk = downloadSingleFile(videoUrl, videoPath, taskId, 0, 50);
                     if (!vOk) {
+                        new File(videoPath).delete();
                         callJS("onTaskFailed", "\"" + taskId + "\", \"视频流下载失败\"");
                         return;
                     }
 
-                    // 下载音频 (50-95%)
+                    // 下载音频 → 缓存 (50-95%)
                     boolean aOk = downloadSingleFile(audioUrl, audioPath, taskId, 50, 95);
                     if (!aOk) {
                         new File(videoPath).delete();
+                        new File(audioPath).delete();
                         callJS("onTaskFailed", "\"" + taskId + "\", \"音频流下载失败\"");
                         return;
                     }
 
-                    // 合并
+                    // 合并 → 缓存
                     jlog(taskId, "开始合并音视频...");
                     callJS("onTaskProgress", "\"" + taskId + "\", 96, \"merging\"");
-                    boolean merged = mediaMerger.merge(videoPath, audioPath, outputPath);
+                    boolean merged = mediaMerger.merge(videoPath, audioPath, mergedPath);
+
+                    // 清理下载缓存
                     new File(videoPath).delete();
                     new File(audioPath).delete();
 
                     if (merged) {
-                        jlog(taskId, "合并成功 output=" + outputPath);
-                        callJS("onTaskComplete", "\"" + taskId + "\", true, \"" + escapeJson(outputPath) + "\"");
+                        // 复制到目标目录
+                        jlog(taskId, "合并成功，复制到目标目录...");
+                        callJS("onTaskProgress", "\"" + taskId + "\", 98, \"copying\"");
+                        boolean copied = copyFile(mergedPath, outputPath);
+                        new File(mergedPath).delete();
+
+                        if (copied) {
+                            jlog(taskId, "复制成功 output=" + outputPath);
+                            callJS("onTaskComplete", "\"" + taskId + "\", true, \"" + escapeJson(outputPath) + "\"");
+                        } else {
+                            jlog(taskId, "复制到目标目录失败", true);
+                            callJS("onTaskFailed", "\"" + taskId + "\", \"写入目标目录失败\"");
+                        }
                     } else {
+                        new File(mergedPath).delete();
                         jlog(taskId, "合并失败", true);
                         callJS("onTaskFailed", "\"" + taskId + "\", \"合并失败\"");
                     }
@@ -491,45 +514,81 @@ public class BridgeInterface {
 
     private boolean downloadSingleFile(String url, String destPath, String taskId,
                                         int progressStart, int progressEnd) {
-        try {
-            jlog(taskId, "下载文件: " + url.substring(url.lastIndexOf('/') + 1) +
-                 " (进度 " + progressStart + "-" + progressEnd + "%)");
-            HttpURLConnection conn = openConnection(url);
-            conn.setConnectTimeout(30000);
-            conn.setReadTimeout(30000);
+        int maxRetries = 3;
+        int delayMs = 500;
 
-            int code = conn.getResponseCode();
-            jlog(taskId, "下载 HTTP code=" + code);
-            if (code < 200 || code >= 300) {
-                jlog(taskId, "下载失败 HTTP " + code, true);
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            if (attempt > 0) {
+                jlog(taskId, "重试下载 第" + attempt + "次 (等待" + delayMs + "ms)...");
+                try { Thread.sleep(delayMs); } catch (InterruptedException ignored) {}
+                delayMs *= 2;
+            }
+
+            try {
+                jlog(taskId, "下载文件: " + url.substring(url.lastIndexOf('/') + 1) +
+                     " (进度 " + progressStart + "-" + progressEnd + "%)"
+                     + (attempt > 0 ? " [重试" + attempt + "]" : ""));
+                HttpURLConnection conn = openConnection(url);
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(30000);
+
+                int code = conn.getResponseCode();
+                jlog(taskId, "下载 HTTP code=" + code);
+
+                // 5xx 服务端错误 → 可重试
+                if (code >= 500 && code < 600) {
+                    jlog(taskId, "服务端错误 HTTP " + code
+                            + (attempt < maxRetries ? "，稍后重试..." : "，重试耗尽"), true);
+                    conn.disconnect();
+                    new File(destPath).delete();
+                    if (attempt < maxRetries) continue;
+                    return false;
+                }
+
+                // 其他非 2xx → 不可重试
+                if (code < 200 || code >= 300) {
+                    jlog(taskId, "下载失败 HTTP " + code, true);
+                    conn.disconnect();
+                    new File(destPath).delete();
+                    return false;
+                }
+
+                long total = conn.getContentLengthLong();
+                InputStream is = conn.getInputStream();
+                FileOutputStream fos = new FileOutputStream(destPath);
+
+                byte[] buf = new byte[8192];
+                long downloaded = 0;
+                int len;
+                long lastReport = 0;
+
+                while ((len = is.read(buf)) != -1) {
+                    fos.write(buf, 0, len);
+                    downloaded += len;
+                    long now = System.currentTimeMillis();
+                    if (total > 0 && now - lastReport > 200) {
+                        lastReport = now;
+                        int pct = progressStart + (int) (downloaded * (progressEnd - progressStart) / total);
+                        callJS("onTaskProgress", "\"" + taskId + "\", " + pct + ", \"downloading\"");
+                    }
+                }
+                fos.close();
+                is.close();
+                conn.disconnect();
+                return true;
+            } catch (java.io.IOException e) {
+                jlog(taskId, "IO异常: " + e.getMessage()
+                        + (attempt < maxRetries ? "，稍后重试..." : "，重试耗尽"), true);
+                new File(destPath).delete();
+                if (attempt < maxRetries) continue;
+                return false;
+            } catch (Exception e) {
+                jlog(taskId, "下载异常: " + e.getMessage(), true);
+                new File(destPath).delete();
                 return false;
             }
-
-            long total = conn.getContentLengthLong();
-            InputStream is = conn.getInputStream();
-            FileOutputStream fos = new FileOutputStream(destPath);
-
-            byte[] buf = new byte[8192];
-            long downloaded = 0;
-            int len;
-            long lastReport = 0;
-
-            while ((len = is.read(buf)) != -1) {
-                fos.write(buf, 0, len);
-                downloaded += len;
-                long now = System.currentTimeMillis();
-                if (total > 0 && now - lastReport > 200) {
-                    lastReport = now;
-                    int pct = progressStart + (int) (downloaded * (progressEnd - progressStart) / total);
-                    callJS("onTaskProgress", "\"" + taskId + "\", " + pct + ", \"downloading\"");
-                }
-            }
-            fos.close();
-            is.close();
-            return true;
-        } catch (Exception e) {
-            return false;
         }
+        return false;
     }
 
     // ═══════════════════════════════════════════════
@@ -542,6 +601,21 @@ public class BridgeInterface {
                 context.getSystemService(Context.CLIPBOARD_SERVICE);
         android.content.ClipData clip = android.content.ClipData.newPlainText("bvds_log", text);
         cm.setPrimaryClip(clip);
+    }
+
+    @JavascriptInterface
+    public boolean saveTextFile(String path, String content) {
+        try {
+            File f = new File(path);
+            File parent = f.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            FileOutputStream fos = new FileOutputStream(f);
+            fos.write(content.getBytes("UTF-8"));
+            fos.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ═══════════════════════════════════════════════
@@ -596,6 +670,13 @@ public class BridgeInterface {
     public void clearCookies() {
         cookieStore = "";
         prefs.edit().remove("cookies").apply();
+    }
+
+    /**
+     * 关闭线程池，由 MainActivity.onDestroy() 调用防止泄漏。
+     */
+    public void shutdown() {
+        executor.shutdown();
     }
 
     /**
@@ -943,7 +1024,7 @@ public class BridgeInterface {
     /**
      * 用 ffmpeg 将音频转 MP3。尝试多个可能的 ffmpeg 路径。
      */
-    private void copyFile(String src, String dest) {
+    private boolean copyFile(String src, String dest) {
         try {
             java.io.FileInputStream fis = new java.io.FileInputStream(src);
             java.io.FileOutputStream fos = new java.io.FileOutputStream(dest);
@@ -951,7 +1032,11 @@ public class BridgeInterface {
             int len;
             while ((len = fis.read(buf)) != -1) fos.write(buf, 0, len);
             fos.close(); fis.close();
-        } catch (Exception ignored) {}
+            return true;
+        } catch (Exception e) {
+            jlog("copyFile", "复制失败 src=" + src + " dest=" + dest + " error=" + e.getMessage(), true);
+            return false;
+        }
     }
 
     private int getQualityCode(String key) {
@@ -1075,11 +1160,16 @@ public class BridgeInterface {
                     || low.startsWith("secure") || low.startsWith("samesite")) continue;
             String key = part.split("=")[0].trim();
             String value = part.substring(part.indexOf('=') + 1).trim();
-            if (cookieStore.contains(key + "=")) {
-                cookieStore = cookieStore.replaceAll(key + "=[^;]*", key + "=" + value);
+            // 手动替换，避免 key 中的正则特殊字符导致 PatternSyntaxException
+            String prefix = key + "=";
+            int idx = cookieStore.indexOf(prefix);
+            if (idx >= 0) {
+                int end = cookieStore.indexOf(";", idx);
+                if (end < 0) end = cookieStore.length();
+                cookieStore = cookieStore.substring(0, idx) + prefix + value + cookieStore.substring(end);
             } else {
                 if (!cookieStore.isEmpty()) cookieStore += "; ";
-                cookieStore += key + "=" + value;
+                cookieStore += prefix + value;
             }
         }
     }

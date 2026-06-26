@@ -76,10 +76,19 @@ public class MediaMerger {
     }
 
     private void writeTrack(MediaExtractor extractor, MediaMuxer muxer, int trackIndex) {
-        ByteBuffer buffer = ByteBuffer.allocate(256 * 1024);
+        // 动态分配缓冲区：先取 sample 大小，避免 4K/高码率视频溢出
+        long sampleSize = extractor.getSampleSize();
+        int bufSize = (sampleSize > 0 && sampleSize < Integer.MAX_VALUE)
+                ? Math.max((int) sampleSize, 256 * 1024) : 256 * 1024;
+        ByteBuffer buffer = ByteBuffer.allocate(bufSize);
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
 
         while (true) {
+            // 若当前 sample 大于已分配缓冲区，扩容
+            long needed = extractor.getSampleSize();
+            if (needed > 0 && needed < Integer.MAX_VALUE && (int) needed > buffer.capacity()) {
+                buffer = ByteBuffer.allocate((int) needed);
+            }
             bufferInfo.offset = 0;
             bufferInfo.size = extractor.readSampleData(buffer, 0);
             if (bufferInfo.size < 0) break;

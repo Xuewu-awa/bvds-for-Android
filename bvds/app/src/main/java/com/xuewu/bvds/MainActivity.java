@@ -59,6 +59,12 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);
 
+        // 屏幕自适应：固定文字缩放比例，防止系统字体大小干扰 rem 布局
+        settings.setTextZoom(100);
+
+        // 显式 1:1 像素映射，配合 Viewport meta 让 CSS px = 设备独立像素
+        webView.setInitialScale(100);
+
         webView.addJavascriptInterface(bridge, "Native");
 
         webView.setWebViewClient(new WebViewClient() {
@@ -93,6 +99,9 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        if (bridge != null) {
+            bridge.shutdown();
+        }
         if (webView != null) {
             webView.destroy();
         }
