@@ -95,6 +95,10 @@ Android Studio 或命令行：
 
 输出：`app/build/outputs/apk/release/app-release.apk`
 
-## 许可
+## 声明
 
 仅供学习交流，请勿用于违法用途。
+
+## 许可
+
+MIT
