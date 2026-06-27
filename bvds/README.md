@@ -14,7 +14,9 @@ bvds/
     └── src/main/
         ├── AndroidManifest.xml     # 权限、Activity 声明
         ├── assets/
-        │   └── app.html            # 单文件前端 (HTML+CSS+JS)
+        │   ├── app.html            # 前端结构 (HTML)
+        │   ├── app.css             # 样式 (CSS)
+        │   └── app.js              # 逻辑 (JavaScript)
         ├── java/com/xuewu/bvds/
         │   ├── MainActivity.java   # WebView 宿主
         │   ├── BridgeInterface.java # JS 桥接 (API/下载/解析)
@@ -31,8 +33,8 @@ bvds/
 ## 架构
 
 ```
-┌─ app.html (WebView) ──────────┐     ┌─ Java 层 ───────────────────┐
-│ UI 渲染 + 用户交互            │     │                              │
+┌─ app.html + app.css + app.js ─┐     ┌─ Java 层 ───────────────────┐
+│ UI 渲染 + 用户交互 (WebView)  │     │                              │
 │                               │     │ BridgeInterface              │
 │ Native.apiGet()  ─────────────┼────→│   ├─ apiGet/apiPost (登录)   │
 │ Native.fetchVideoInfo() ──────┼────→│   ├─ fetchVideoInfo (解析)   │

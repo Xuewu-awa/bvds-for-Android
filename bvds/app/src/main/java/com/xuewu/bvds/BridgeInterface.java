@@ -2,6 +2,7 @@ package com.xuewu.bvds;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.media.MediaScannerConnection;
 import android.os.Handler;
 import android.os.Looper;
 import android.webkit.JavascriptInterface;
@@ -437,6 +438,7 @@ public class BridgeInterface {
                     boolean ok = downloadSingleFile(videoUrl, outputPath, taskId, 0, 100);
                     if (ok) {
                         callJS("onTaskComplete", "\"" + taskId + "\", true, \"" + escapeJson(outputPath) + "\"");
+                        scanMediaFile(outputPath);
                     } else {
                         callJS("onTaskFailed", "\"" + taskId + "\", \"视频下载失败\"");
                     }
@@ -449,6 +451,7 @@ public class BridgeInterface {
                     if (ok) {
                         jlog(taskId, "音频保存成功: " + m4aPath);
                         callJS("onTaskComplete", "\"" + taskId + "\", true, \"" + escapeJson(m4aPath) + "\"");
+                        scanMediaFile(m4aPath);
                     } else {
                         callJS("onTaskFailed", "\"" + taskId + "\", \"音频下载失败\"");
                     }
@@ -495,6 +498,7 @@ public class BridgeInterface {
                         if (copied) {
                             jlog(taskId, "复制成功 output=" + outputPath);
                             callJS("onTaskComplete", "\"" + taskId + "\", true, \"" + escapeJson(outputPath) + "\"");
+                            scanMediaFile(outputPath);
                         } else {
                             jlog(taskId, "复制到目标目录失败", true);
                             callJS("onTaskFailed", "\"" + taskId + "\", \"写入目标目录失败\"");
@@ -1110,6 +1114,16 @@ public class BridgeInterface {
         mainHandler.post(() -> {
             webView.evaluateJavascript(function + "(" + args + ")", null);
         });
+    }
+
+    // 通知系统扫描媒体文件，使其在相册/文件管理器中可见
+    private void scanMediaFile(String path) {
+        try {
+            MediaScannerConnection.scanFile(context, new String[]{path}, null, null);
+            jlog("system", "媒体扫描已触发: " + path);
+        } catch (Exception e) {
+            // 扫描失败不影响主流程
+        }
     }
 
     // 发送日志到 JS 面板（带 taskId 前缀）
